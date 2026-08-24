@@ -6,7 +6,7 @@
 
 using NTSTATUS = int32_t;
 
-#ifdef LINUX
+#ifdef POSIX
 using HANDLE = void *;
 #endif
 

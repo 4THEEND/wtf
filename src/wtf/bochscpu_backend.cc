@@ -104,7 +104,7 @@ void StaticGpaMissingHandler(const uint64_t Gpa) {
   Left -= Page::Size;
   Current += Page::Size;
   if (Page == nullptr) {
-#elif defined LINUX
+#elif defined POSIX
   uint8_t *Page = (uint8_t *)mmap(nullptr, Page::Size, PROT_READ | PROT_WRITE,
                                   MAP_ANONYMOUS | MAP_PRIVATE, -1, 0);
   if (Page == (void *)-1) {

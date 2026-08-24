@@ -55,13 +55,14 @@ jobs:
             src/build/symsrv.dll
 
   Linux:
-    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
+        os: ["ubuntu-latest", "ubuntu-24.04-arm"]
         compiler: ["clang", "gcc"]
 
-    name: Ubuntu latest / ${{ matrix.compiler }}
+    runs-on: ${{ matrix.os }}
+    name: ${{ matrix.os }} / ${{ matrix.compiler }}
     steps:
       - name: Checkout
         uses: actions/checkout@v7
@@ -95,6 +96,30 @@ jobs:
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:
-          name: bin-lin64-${{ matrix.compiler }}.Release
+          name: bin-${{ matrix.os }}-${{ matrix.compiler }}.Release
+          path: |
+            src/build/wtf
+
+  macOS:
+    runs-on: macos-latest
+    name: macOS latest / arm64
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Installing dependencies
+        run: |
+          brew install ninja
+
+      - name: Build
+        run: |
+          cd src/build
+          chmod u+x ./build-release.sh
+          ./build-release.sh
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: bin-macos-arm64.Release
           path: |
             src/build/wtf

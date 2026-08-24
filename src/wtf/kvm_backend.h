@@ -3,7 +3,7 @@
 #include "backend.h"
 #include "platform.h"
 
-#ifdef LINUX
+#ifdef HAS_KVM
 #include "tsl/robin_map.h"
 #include "tsl/robin_set.h"
 #include <array>

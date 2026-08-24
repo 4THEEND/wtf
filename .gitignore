@@ -1,6 +1,10 @@
 # Prerequisites
 *.d
 
+# Rust
+Cargo.lock
+target/
+
 # Compiled Object files
 *.slo
 *.lo

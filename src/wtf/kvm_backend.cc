@@ -1,7 +1,7 @@
 // Axel '0vercl0k' Souchet - June 14 2020
 #include "kvm_backend.h"
 
-#ifdef LINUX
+#ifdef HAS_KVM
 #include "blake3.h"
 #include "nt.h"
 #include "utils.h"

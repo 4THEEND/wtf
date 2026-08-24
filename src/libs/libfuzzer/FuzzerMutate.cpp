@@ -68,7 +68,7 @@ namespace fuzzer {
         return NULL;
     }
 
-#ifdef __linux__
+#if defined(__linux__) || defined(__APPLE__)
     inline uint8_t  Bswap(uint8_t x) { return x; }
     inline uint16_t Bswap(uint16_t x) { return __builtin_bswap16(x); }
     inline uint32_t Bswap(uint32_t x) { return __builtin_bswap32(x); }

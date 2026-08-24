@@ -22,15 +22,14 @@ file(
     wtf/*.cc
 )
 
-
 file(
     GLOB_RECURSE
     libfuzzer_srcfiles
     ${CMAKE_CURRENT_LIST_DIR}/libs/libfuzzer/*.cpp
 )
 
-set(
-    blake3_srcfiles
+add_library(
+    blake3 STATIC
     ${CMAKE_CURRENT_LIST_DIR}/libs/BLAKE3/c/blake3.c
     ${CMAKE_CURRENT_LIST_DIR}/libs/BLAKE3/c/blake3_dispatch.c
     ${CMAKE_CURRENT_LIST_DIR}/libs/BLAKE3/c/blake3_portable.c
@@ -40,13 +39,17 @@ add_executable(
     wtf
     ${wtf_srcfiles}
     ${libfuzzer_srcfiles}
-    ${blake3_srcfiles}
 )
 
 add_compile_definitions(FMT_HEADER_ONLY)
-set_property(TARGET wtf PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
 
-if (WIN32)
+# Reject unsupported architectures early.
+if(NOT CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64|x86_64|AMD64")
+    message(FATAL_ERROR "Unsupported architecture: ${CMAKE_SYSTEM_PROCESSOR}")
+endif()
+
+if(WIN32)
+    set_property(TARGET wtf PROPERTY MSVC_RUNTIME_LIBRARY "MultiThreaded")
     enable_language(ASM_MASM)
     # This is for winsock / windows.h; without this windows.h imports socket.
     # https://docs.microsoft.com/en-us/windows/win32/iphlp/creating-a-basic-ip-helper-application
@@ -60,18 +63,13 @@ if (WIN32)
         ${CMAKE_CURRENT_LIST_DIR}/libs/BLAKE3/c/blake3_avx512_x86-64_windows_msvc.asm
     )
 
-    # https://docs.microsoft.com/en-us/cpp/build/reference/zc-cplusplus
     target_compile_options(
         wtf
         PRIVATE
-        "$<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>"
-    )
-
-    # /utf-8 for fmt
-    target_compile_options(
-        wtf
-        PRIVATE
+        # /utf-8 for fmt
         "$<$<COMPILE_LANGUAGE:CXX>:/utf-8>"
+        # https://docs.microsoft.com/en-us/cpp/build/reference/zc-cplusplus
+        "$<$<COMPILE_LANGUAGE:CXX>:/Zc:__cplusplus>"
     )
 
     # Delay loading dbgeng.dll:
@@ -85,6 +83,7 @@ if (WIN32)
         PRIVATE
         /DELAYLOAD:dbgeng.dll
     )
+
     target_link_libraries(
         wtf
         ws2_32.lib
@@ -105,31 +104,52 @@ if (WIN32)
         hevd_client
         hevd_client/hevd_client.cc
     )
-else (WIN32)
+elseif(UNIX)
     enable_language(ASM)
     find_package(Threads)
-    target_sources(
-        wtf
-        PRIVATE
-        ${CMAKE_CURRENT_LIST_DIR}/libs/BLAKE3/c/blake3_sse41_x86-64_unix.S
-        ${CMAKE_CURRENT_LIST_DIR}/libs/BLAKE3/c/blake3_sse2_x86-64_unix.S
-        ${CMAKE_CURRENT_LIST_DIR}/libs/BLAKE3/c/blake3_avx2_x86-64_unix.S
+    target_link_libraries(wtf ${CMAKE_THREAD_LIBS_INIT})
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_libraries(wtf dl)
+    endif()
 
-        # libbochscpu_ffi.a already links this so will lead to multiple definition errors like in the below:
-        #    ```
-        #   `blake3_compress_in_place_avx512':
-        #   (.text+0x3780): multiple definition of `_blake3_compress_in_place_avx512'; CMakeFiles/wtf.dir/libs/BLAKE3/c/blake3_avx512_x86-64_unix.S.o:(.text+0x3740): first defined here
-        #   /usr/bin/ld: /home/runner/work/wtf/wtf/src/libs/bochscpu-bins/lib/libbochscpu_ffi.a(b8423798394d5395-blake3_avx512_x86-64_unix.o)
-        #   ```
-        # ${CMAKE_CURRENT_LIST_DIR}/libs/BLAKE3/c/blake3_avx512_x86-64_unix.S
-    )
+    # `ld: warning: object file (/Users/runner/work/wtf/wtf/src/libs/bochscpu-bins/lib/libbochscpu_ffi_Darwin_arm64.a[2](bochscpu_ffi.bochscpu_ffi.2bcf5603cd78585e-cgu.0.rcgu.o)) was built for newer 'macOS' version (26.3.1) than being linked (26.0)`
+    if(APPLE AND NOT CMAKE_OSX_DEPLOYMENT_TARGET)
+        execute_process(
+            COMMAND sw_vers -productVersion
+            OUTPUT_VARIABLE CMAKE_OSX_DEPLOYMENT_TARGET
+            OUTPUT_STRIP_TRAILING_WHITESPACE
+        )
+    endif()
 
-    target_link_libraries(
-        wtf
-        ${CMAKE_THREAD_LIBS_INIT}
-        dl
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64")
+        target_sources(
+            wtf
+            PRIVATE
+            ${CMAKE_CURRENT_LIST_DIR}/libs/BLAKE3/c/blake3_sse41_x86-64_unix.S
+            ${CMAKE_CURRENT_LIST_DIR}/libs/BLAKE3/c/blake3_sse2_x86-64_unix.S
+            ${CMAKE_CURRENT_LIST_DIR}/libs/BLAKE3/c/blake3_avx2_x86-64_unix.S
+
+            # libbochscpu_ffi.a already links this so will lead to multiple definition errors like in the below:
+            #    ```
+            #   `blake3_compress_in_place_avx512':
+            #   (.text+0x3780): multiple definition of `_blake3_compress_in_place_avx512'; CMakeFiles/wtf.dir/libs/BLAKE3/c/blake3_avx512_x86-64_unix.S.o:(.text+0x3740): first defined here
+            #   /usr/bin/ld: /home/runner/work/wtf/wtf/src/libs/bochscpu-bins/lib/libbochscpu_ffi.a(b8423798394d5395-blake3_avx512_x86-64_unix.o)
+            #   ```
+            # ${CMAKE_CURRENT_LIST_DIR}/libs/BLAKE3/c/blake3_avx512_x86-64_unix.S
+        )
+    endif()
+else()
+    message(FATAL_ERROR "Unsupported platform: ${CMAKE_SYSTEM_NAME}")
+endif()
+
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+    target_compile_definitions(blake3 PRIVATE BLAKE3_USE_NEON=1)
+    # libbochscpu_ffi.a bundles blake3_compress_in_place_portable.
+    # Rename our copy to avoid duplicate symbols at link time.
+    target_compile_definitions(blake3 PRIVATE
+        blake3_compress_in_place_portable=_wtf_blake3_compress_in_place_portable
     )
-endif(WIN32)
+endif()
 
 target_precompile_headers(
     wtf
@@ -139,6 +159,7 @@ target_precompile_headers(
 
 target_link_libraries(
     wtf
-    ${CMAKE_CURRENT_LIST_DIR}/libs/bochscpu-bins/lib/${CMAKE_SHARED_MODULE_PREFIX}bochscpu_ffi${CMAKE_STATIC_LIBRARY_SUFFIX}
+    blake3
+    ${CMAKE_CURRENT_LIST_DIR}/libs/bochscpu-bins/lib/${CMAKE_SHARED_MODULE_PREFIX}bochscpu_ffi_${CMAKE_SYSTEM_NAME}_${CMAKE_SYSTEM_PROCESSOR}${CMAKE_STATIC_LIBRARY_SUFFIX}
     kdmp-parser
 )
