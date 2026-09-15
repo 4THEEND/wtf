@@ -8,6 +8,7 @@
 #include <optional>
 #include <string>
 #include <variant>
+#include <functional>
 
 struct Ok_t {
   constexpr std::string_view Name() const { return "ok"; }
@@ -107,7 +108,7 @@ union VIRTUAL_ADDRESS {
 static_assert(sizeof(MMPTE_HARDWARE) == 8);
 
 class Backend_t;
-using BreakpointHandler_t = void (*)(Backend_t *);
+using BreakpointHandler_t = std::function<void (Backend_t *)>;
 
 //
 // When doing memory translation, we can ask for validating certains

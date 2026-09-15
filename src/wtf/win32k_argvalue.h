@@ -276,9 +276,17 @@ public:
 struct MarshalledCall {
     static constexpr std::size_t kFirstStackOffset = 0x28;
 
+    /// One region as it would appear in memory: address assigned, relocations applied.
+    struct Image {
+        RegionId                  id      = kNoRegion;
+        std::uint64_t             address = 0;
+        std::vector<std::uint8_t> bytes;
+    };
+
     std::uint32_t              ssn = 0;
     std::uint64_t              r10 = 0, rdx = 0, r8 = 0, r9 = 0;
     std::vector<std::uint64_t> stack;  ///< stack[k] is argument 4+k
+    std::vector<Image>         memory; ///< the relocated bytes, NOT written back
 
     std::uint64_t reg(int i) const {
         switch (i) {
@@ -382,21 +390,37 @@ public:
     /// Assign addresses, apply every relocation, and produce the ABI image.
     /// All addresses are assigned before any patching, so relocations may point
     /// forwards, backwards, or at themselves.
+    ///
+    /// This does NOT write the relocated addresses back into the frame. Baking them in
+    /// would persist a simulated address into the region bytes, and from there into any
+    /// corpus entry saved afterwards - a pointer field that should read as neutral would
+    /// carry a stale address instead, and a later mutation that clears the relocation
+    /// would turn it into a wild pointer nobody chose. The relocated bytes come back in
+    /// MarshalledCall::memory instead, leaving the frame a pure description.
     MarshalledCall marshal(const Allocator& alloc) {
         if (!alloc) throw std::invalid_argument("marshal needs an allocator");
 
         for (Region& r : regions_)
             r.address = r.empty() ? 0 : alloc(r.size(), r.alignment);
 
-        for (Region& r : regions_)
+        MarshalledCall m;
+        m.memory.reserve(regions_.size());
+        for (std::size_t i = 0; i < regions_.size(); ++i) {
+            const Region& r = regions_[i];
+            MarshalledCall::Image img;
+            img.id = static_cast<RegionId>(i);
+            img.address = r.address;
+            img.bytes = r.bytes;
             for (const Reloc& rel : r.relocs) {
+                if (rel.offset + 8 > img.bytes.size()) continue;
                 const std::uint64_t base =
                     (rel.target == kNoRegion) ? 0 : regions_.at(checked(rel.target)).address;
-                r.poke<std::uint64_t>(
-                    rel.offset, base ? static_cast<std::uint64_t>(base + rel.addend) : 0);
+                const std::uint64_t val =
+                    base ? static_cast<std::uint64_t>(base + rel.addend) : 0;
+                std::memcpy(img.bytes.data() + rel.offset, &val, sizeof(val));
             }
-
-        MarshalledCall m;
+            m.memory.push_back(std::move(img));
+        }
         m.ssn = ssn_;
         for (std::size_t i = 0; i < args_.size(); ++i) {
             const std::uint64_t v = resolve(args_[i]);
@@ -553,6 +577,10 @@ public:
 
     std::size_t     index() const { return i_; }
     const Argument* meta()  const { return meta_; }
+    /// The frame this argument belongs to - needed to resolve region ids when
+    /// walking a pointer tree.
+    CallFrame&       frame()       { return *f_; }
+    const CallFrame& frame() const { return *f_; }
     ArgValue&       value()       { return f_->arg(i_); }
     const ArgValue& value() const { return f_->arg(i_); }
 
@@ -565,6 +593,48 @@ public:
     bool isHandle() const { return shape() == Shape::Handle; }
     /// A pointer whose contents were never recovered - mutate it as raw bytes.
     bool isOpaque() const { return shape() == Shape::Opaque; }
+
+    // ---- raw bytes -------------------------------------------------------
+
+    /// Pointer to the argument's backing bytes, or nullptr when there are none.
+    ///
+    /// Two things to know before using this:
+    ///
+    ///  * the bytes are PRE-RELOCATION. Pointer fields inside the region hold whatever
+    ///    was last written there - zero in a freshly built frame - because addresses do
+    ///    not exist until CallFrame::marshal() runs. Call marshal() first if you need
+    ///    the buffer exactly as the kernel would see it.
+    ///  * region() is null for a scalar or handle (the value is value().raw), and also
+    ///    for a pointer that a mutation replaced with a literal address, because a
+    ///    RawPointer has no region behind it.
+    std::uint8_t* data() {
+        Region* r = region();
+        return (r && !r->empty()) ? r->bytes.data() : nullptr;
+    }
+    const std::uint8_t* data() const { return const_cast<BoundArg*>(this)->data(); }
+
+    std::size_t byteCount() const {
+        const Region* r = region();
+        return r ? r->size() : 0;
+    }
+
+    /// Copy of the backing bytes; empty when the argument has no region.
+    std::vector<std::uint8_t> bytes() const {
+        const Region* r = region();
+        return r ? r->bytes : std::vector<std::uint8_t>{};
+    }
+
+    /// The region a pointer FIELD at `offset` points at - for walking into a
+    /// UNICODE_STRING's Buffer, or a nested structure. Null when that offset holds no
+    /// relocation (including after setPointerFieldRaw dropped it).
+    Region* pointeeAt(int offset) {
+        Region* r = region();
+        if (!r) return nullptr;
+        for (const Reloc& rl : r->relocs)
+            if (rl.offset == static_cast<std::size_t>(offset) && rl.target != kNoRegion)
+                return &f_->region(rl.target);
+        return nullptr;
+    }
 
     /// Backing memory, or nullptr when this argument is not a pointer into the frame.
     Region* region() {
