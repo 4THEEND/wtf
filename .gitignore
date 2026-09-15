@@ -36,6 +36,7 @@ target/
 *.app
 
 .vs
+.vscode
 src/wtf/fuzzer_*
 src/build/
 src/build_msvc/
