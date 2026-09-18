@@ -27,6 +27,7 @@
 
 #include <nlohmann/json.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <random>
@@ -36,7 +37,7 @@
 
 namespace helpers {
 
-constexpr bool DebugLoggingOn = true;
+constexpr bool DebugLoggingOn = false;
 constexpr bool MutateSyscall = true;
 
 template <typename... Args_t>
@@ -125,9 +126,45 @@ struct MutationConfig {
     bool   resize_arrays      = true;
     bool   desync_counts      = true;
     bool   use_dictionary     = true;   ///< prefer literals the kernel was seen to accept
-    std::size_t max_array_elements = 4096;
+    /// Ceiling on an array's SIZE, not its element count.
+    ///
+    /// A count is the wrong unit: the same number of elements is 50 bytes for a byte
+    /// array and 3200 for a 64-byte one, and the arrays in the table span element sizes
+    /// 1, 2, 4, 8, 16 and 64. Keep max_array_bytes in step with the writer's
+    /// max_bytes_per_region - sizing past what the writer actually puts in the target
+    /// produces bytes that are never written while setElementCount still raises the
+    /// count argument, turning every resize into an accidental desync.
+    std::size_t max_array_bytes    = 0x1000;
+    std::size_t max_array_elements = 4096;  ///< absolute backstop, whichever binds first
     std::size_t max_mutations      = 16; ///< cap per frame, so one call stays explainable
 };
+
+/// Choose an element count worth trying.
+/// This mixes boundaries, the neighbourhood of the count the call already had, and a
+/// log-uniform spread, so every magnitude stays reachable and zero appears ~6% of the
+/// time.
+inline std::size_t pickElementCount(Rng& rng, std::size_t current, std::size_t cap) {
+    if (cap < 1) cap = 1;
+    const std::uint64_t roll = rng.below(100);
+    if (roll < 25) {                       // boundaries, including zero
+        static const std::vector<std::uint64_t> edge{0, 1, 2, 3};
+        return static_cast<std::size_t>(std::min<std::uint64_t>(rng.pick(edge), cap));
+    }
+    if (roll < 50 && current) {            // just off what the call already had
+        static const std::vector<std::int64_t> d{-2, -1, 1, 2};
+        const std::int64_t n = static_cast<std::int64_t>(current) + rng.pick(d);
+        return static_cast<std::size_t>(
+            std::clamp<std::int64_t>(n, 0, static_cast<std::int64_t>(cap)));
+    }
+    if (roll < 90) {                       // log-uniform: every magnitude equally likely
+        std::size_t bits = 0;
+        while ((std::size_t{1} << (bits + 1)) <= cap && bits < 31) ++bits;
+        const std::size_t mag = static_cast<std::size_t>(rng.below(bits + 1));
+        const std::size_t hi  = std::min<std::size_t>(std::size_t{1} << mag, cap);
+        return static_cast<std::size_t>(rng.below(hi)) + 1;
+    }
+    return cap;                            // and the ceiling itself
+}
 
 /// The paper's variable-probability strategy: p = 0.01 * 2^n, n in [-3, 3].
 inline double pickProbability(Rng& rng) {
@@ -264,6 +301,8 @@ public:
 
         for(auto& frame : Root){
             FrameView fw = FrameView::bind(frame, SyscallDatabase_);
+            MutationLog logs{ mutateWithVariableProbability(fw) };
+            // std::cout << logs.toJson() << "\n";
         }
 
         json Serialized{ win32k::value::toJson(Root) };
@@ -361,7 +400,14 @@ private:
         // it after a desync would silently undo the desync.
         if (cfg_.resize_arrays && rng_.chance(cfg_.probability)) {
             const std::size_t oldN = a.elementCount();
-            const std::size_t newN = rng_.below(cfg_.max_array_elements) + 1;
+            const std::size_t per  = static_cast<std::size_t>(std::max(es, 1));
+            // Whichever ceiling binds first, plus the testcase budget: base64 costs
+            // about 4/3 of a character per byte once the document is dumped.
+            std::size_t cap = std::min(cfg_.max_array_bytes / per, cfg_.max_array_elements);
+            if (TestcaseMaxSize_)
+                cap = std::min(cap,
+                               std::max<std::size_t>(1, (TestcaseMaxSize_ * 3 / 4) / per));
+            const std::size_t newN = pickElementCount(rng_, oldN, std::max<std::size_t>(cap, 1));
             a.setElementCount(newN);
             record(a.index(), Strategy::ArrayResize, -1, oldN, newN);
         }

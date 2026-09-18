@@ -128,7 +128,7 @@ bool Backend_t::VirtRead(const Gva_t Gva, uint8_t *Buffer,
         VirtTranslate(CurrentGva, Gpa, MemoryValidate_t::ValidateRead);
 
     if (!Translate) {
-      fmt::print("Translation of GVA {:#x} failed\n", CurrentGva);
+      fmt::print("Translation of GVA {:#x} failed (Read)\n", CurrentGva);
       __debugbreak();
       return false;
     }
@@ -191,7 +191,7 @@ bool Backend_t::VirtWrite(const Gva_t Gva, const uint8_t *Buffer,
         CurrentGva, Gpa, MemoryValidate_t::ValidateRead /*Write*/);
 
     if (!Translate) {
-      fmt::print("Translation of GVA {:#x} failed\n", CurrentGva);
+      fmt::print("Translation of GVA {:#x} failed (Write)\n", CurrentGva);
       __debugbreak();
       return false;
     }

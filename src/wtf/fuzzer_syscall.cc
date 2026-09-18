@@ -113,14 +113,12 @@ void insertSyscall(std::string syscallName, Backend_t* Backend){
         return;
     }
 
-    DebugPrint("Going to insert testcase\n");
-    if(DebugLoggingOn)
-        readParameters(Backend, syscallName);
-
 
     //
     // Let's insert the testcase in memory now.
     //
+    DebugPrint("Going to insert testcase\n");
+    
     InPlaceWriter writer{ *Backend };
     PlacedCall c = writer.WriteFrame(fw);
 
@@ -128,10 +126,7 @@ void insertSyscall(std::string syscallName, Backend_t* Backend){
         DebugPrint("Failed to place the call\n");
         std::abort();
     }
-
-
-    if(DebugLoggingOn)
-        readParameters(Backend, syscallName);
+    DebugPrint("Call placed\n");
 
     //
     // We're done with this testcase!
@@ -157,7 +152,6 @@ bool Init(const Options_t &Opts, const CpuState_t &) {
         return false;
     }
 
-
     //
     // NOP the calls to DbgPrintEx. WHYYYYYYYYYYYYYY ??????
     //
@@ -168,6 +162,26 @@ bool Init(const Options_t &Opts, const CpuState_t &) {
         Backend->SimulateReturnFromFunction(0);
       })) {
         fmt::print("Failed to SetBreakpoint DbgPrintEx\n");
+        return false;
+    }
+
+    //
+    // Catch bugchecks.
+    //
+    if (!g_Backend->SetBreakpoint("nt!KeBugCheck2", [](Backend_t *Backend) {
+        const uint32_t BCode = Backend->GetArg4(0);
+        const uint64_t B0 = Backend->GetArg8(1);
+        const uint64_t B1 = Backend->GetArg8(2);
+        const uint64_t B2 = Backend->GetArg8(3);
+        const uint64_t B3 = Backend->GetArg8(4);
+        const uint64_t B4 = Backend->GetArg8(5);
+        const std::string Filename =
+            fmt::format("crash-{:#x}-{:#x}-{:#x}-{:#x}-{:#x}-{:#x}", BCode, B0,
+                        B1, B2, B3, B4);
+        DebugPrint("KeBugCheck2: {}\n", Filename);
+        Backend->Stop(Crash_t(Filename));
+      })) {
+        fmt::print("Failed to SetBreakpoint KeBugCheck2\n");
         return false;
     }
 
