@@ -36,7 +36,7 @@
 
 namespace helpers {
 
-constexpr bool DebugLoggingOn = false;
+constexpr bool DebugLoggingOn = true;
 constexpr bool MutateSyscall = true;
 
 template <typename... Args_t>
@@ -53,7 +53,7 @@ std::vector<win32k::value::CallFrame> Deserialize(const uint8_t *Buffer, const s
   try {
     return win32k::value::corpusFromJson(Root);
   } catch (std::runtime_error(what_arg)) {
-    DebugPrint(what_arg.what());
+    DebugPrint("{}\n", what_arg.what());
     return { win32k::value::callFrameFromJson(Root) };
   }
 }
@@ -233,7 +233,7 @@ public:
  
             std::cout << "schema " << SyscallDatabase_.schemaVersion()
                     << "   build " << SyscallDatabase_.build().value("build", "?")
-                    << "   " << SyscallDatabase_.syscalls().size() << " syscalls\n\n";
+                    << "   " << SyscallDatabase_.syscalls().size() << " syscall(s)\n\n";
 
         } catch (const std::exception& e) {
             std::cerr << "error: " << e.what() << "\n";
@@ -264,7 +264,6 @@ public:
 
         for(auto& frame : Root){
             FrameView fw = FrameView::bind(frame, SyscallDatabase_);
-            DebugPrint("{}\n", mutate(fw).toJson());
         }
 
         json Serialized{ win32k::value::toJson(Root) };

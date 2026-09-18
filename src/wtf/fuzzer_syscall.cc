@@ -6,6 +6,7 @@
 
 #include "win32k_mutate.h"
 #include "win32k_write.h"
+#include "win32k_capture.h"
 
 #include <nlohmann/json.hpp>
 #include <fmt/format.h>
@@ -15,6 +16,7 @@
 #include <optional>
 #include <unordered_map>
 #include <functional>
+#include <unordered_set>
 
 
 /* Syscall Handling:
@@ -25,16 +27,48 @@ namespace Syscall {
 using namespace helpers;
 using namespace win32k::value;
 using namespace win32k::target;
+using namespace win32k::access;
 
 std::deque<CallFrame> syscallToModify{};
 win32k::Database SyscallDatabase = win32k::Database::fromFile("win32k_syscalls_26100.json");
 
 
+inline Registers_t toWtf(Reg r) {
+    switch (r) {
+        case Reg::Rax: return Registers_t::Rax;
+        case Reg::Rcx: return Registers_t::Rcx;
+        case Reg::Rdx: return Registers_t::Rdx;
+        case Reg::Rsp: return Registers_t::Rsp;
+        case Reg::R8:  return Registers_t::R8;
+        case Reg::R9:  return Registers_t::R9;
+        case Reg::R10: return Registers_t::R10;
+    }
+}
+
+
+void readParameters(Backend_t* Backend, std::string syscallName){
+    Access access{};
+    access.read_mem = [&](uint64_t g, void* d, size_t n) { return Backend->VirtRead(Gva_t(g), (uint8_t*)d, n); };
+    access.read_reg  = [&](Reg r) { return Backend->GetReg(toWtf(r)); };
+
+    win32k::capture::FrameCapturer cap{ access };
+    win32k::capture::CaptureResult res{};
+
+    auto frame = cap.Capture(*SyscallDatabase.byName(syscallName), &res);
+    if (!res.ok) {
+        std::cout << "Pbm while reading the dump\n";
+        return;
+    }
+
+    std::cout << win32k::value::toJson(frame.value()) << "\n";
+}
+
+
 bool InsertTestcase(const uint8_t *Buffer, const size_t BufferSize) {
     std::vector<CallFrame> Root = Deserialize(Buffer, BufferSize);
-    
+
     for (const auto& f : Root){
-        std::cout << "Frame with name " << f.name() << "\n";
+        DebugPrint("Frame with name {} \n", f.name());
         syscallToModify.push_front(f);
     }
         
@@ -43,64 +77,105 @@ bool InsertTestcase(const uint8_t *Buffer, const size_t BufferSize) {
 
 
 void insertSyscall(std::string syscallName, Backend_t* Backend){
-    if (syscallToModify.size() == 0) {
-        //
-        // We are done with the testcase so return to the engine.
-        //
-        return g_Backend->Stop(Ok_t());
+    
+    //
+    // The first time we hit this breakpoint, we
+    // grab the return address and we set a
+    // breakpoint there to finish the testcase.
+    //
+    static std::unordered_set<std::string> setReturnBreakpoints{};
+
+    if (setReturnBreakpoints.find(syscallName) == setReturnBreakpoints.end()) {
+        setReturnBreakpoints.insert(syscallName);
+        const auto ReturnAddress = Backend->VirtReadGva(Gva_t(Backend->Rsp()));
+
+        if (!Backend->SetBreakpoint(ReturnAddress, 
+            [](Backend_t *Backend) {
+                DebugPrint("Hit return breakpoint!\n");
+                if (syscallToModify.size() == 0) {
+                    return g_Backend->Stop(Ok_t());
+                }
+            })) {
+
+            fmt::print("Failed to set breakpoint on return\n");
+            std::abort();
+        }
     }
 
-    //
-    // Let's insert the testcase in memory now.
-    //
     auto &Testcase = syscallToModify.front();
     FrameView fw = FrameView::bind(Testcase, SyscallDatabase);
             
     if (Testcase.name() != syscallName){
         //
-        // If some syscalls are inserted between the expected ones\
+        // If some syscalls are inserted between the expected ones
         //
         DebugPrint("Captured {} instead of {}\n", Testcase.name(), syscallName);
         return;
     }
 
-    DebugPrint("Going to insert testcase");
+    DebugPrint("Going to insert testcase\n");
+    if(DebugLoggingOn)
+        readParameters(Backend, syscallName);
 
+
+    //
+    // Let's insert the testcase in memory now.
+    //
     InPlaceWriter writer{ *Backend };
     PlacedCall c = writer.WriteFrame(fw);
 
     if (!c.ok) {
         DebugPrint("Failed to place the call\n");
-        return;
+        std::abort();
     }
+
+
+    if(DebugLoggingOn)
+        readParameters(Backend, syscallName);
 
     //
     // We're done with this testcase!
     //
     syscallToModify.pop_front();
-
-    Backend->PrintRegisters();
 }
 
 
 bool Init(const Options_t &Opts, const CpuState_t &) {
-    DebugPrint("Fuzzing {}", Opts.TargetName);
+    DebugPrint("Fuzzing {}\n", Opts.TargetName);
 
-    std::vector<std::string> syscallsToParse{};
-    const Gva_t Rip = Gva_t(g_Backend->Rip());
+    // TODO: Resolve that using corpus
+    std::vector<std::string> syscallsToParse{ "NtDeviceIoControlFile" };
 
-    if (!g_Backend->SetBreakpoint(Rip, [](Backend_t *Backend) {
-        DebugPrint(
-            "This is a breakpoint executed before the first instruction :)\n");
-    })) {
-        DebugPrint("Failed to SetBreakpoint on first instruction\n");
+    //
+    // Catch context-switches.
+    //
+    if (!g_Backend->SetBreakpoint("nt!SwapContext", [](Backend_t *Backend) {
+        DebugPrint("nt!SwapContext\n");
+        Backend->Stop(Cr3Change_t());
+      })) {
+        fmt::print("Failed to SetBreakpoint SwapContext\n");
         return false;
-    } 
+    }
+
+
+    //
+    // NOP the calls to DbgPrintEx. WHYYYYYYYYYYYYYY ??????
+    //
+    if (!g_Backend->SetBreakpoint("nt!DbgPrintEx", [](Backend_t *Backend) {
+        const Gva_t FormatPtr = Backend->GetArgGva(2);
+        const std::string &Format = Backend->VirtReadString(FormatPtr);
+        DebugPrint("DbgPrintEx: {}", Format);
+        Backend->SimulateReturnFromFunction(0);
+      })) {
+        fmt::print("Failed to SetBreakpoint DbgPrintEx\n");
+        return false;
+    }
+
 
     for (const auto& syscallName : syscallsToParse){
-        std::string breakName = Opts.TargetName + "!" + syscallName;
+        std::string breakName = "nt!" + syscallName;
         if (!g_Backend->SetBreakpoint(breakName.c_str(), std::bind(insertSyscall, syscallName, std::placeholders::_1))) {
-            DebugPrint("Failed to SetBreakpoint ProcessPacket\n");
+            DebugPrint("Failed to SetBreakpoint {}\n", breakName);
             return false;
         }
     }

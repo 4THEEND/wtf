@@ -485,6 +485,7 @@ struct BuildOptions {
 inline CallFrame buildFrame(const Syscall& s, const BuildOptions& opt = {}) {
     CallFrame f(s.ssn, s.name);
     f.setArgCount(static_cast<std::size_t>(s.nargs));
+    std::vector<std::pair<int, std::size_t>> counts;   // applied after the main pass
 
     for (const Argument& a : s.args) {
         const auto        i     = static_cast<std::size_t>(a.index);
@@ -504,9 +505,10 @@ inline CallFrame buildFrame(const Syscall& s, const BuildOptions& opt = {}) {
             const int countArg = a.array->count_arg ? *a.array->count_arg : -1;
             const RegionId r   = f.addArrayRegion(es, opt.array_elements, label + "[]");
             f.setArg(i, ArgValue::array(r, static_cast<int>(es), countArg));
-            if (countArg >= 0)  // keep the count consistent with the buffer
-                f.setArg(static_cast<std::size_t>(countArg),
-                         ArgValue::scalar(opt.array_elements, 4));
+            // Defer writing the count: if it sits AFTER the buffer in the argument list
+            // (NtDeviceIoControlFile: buffer a6, length a7) the loop would reach it later
+            // and overwrite it with a plain zero scalar.
+            if (countArg >= 0) counts.emplace_back(countArg, opt.array_elements);
             continue;
         }
 
@@ -556,6 +558,11 @@ inline CallFrame buildFrame(const Syscall& s, const BuildOptions& opt = {}) {
             v = static_cast<std::uint64_t>(a.observed_values->literals.front());
         f.setArg(i, ArgValue::scalar(v, a.size));
     }
+
+    // Now that every argument exists, make each array's count match its buffer.
+    for (const auto& [idx, n] : counts)
+        if (idx >= 0 && static_cast<std::size_t>(idx) < f.argCount())
+            f.setArg(static_cast<std::size_t>(idx), ArgValue::scalar(n, 4));
     return f;
 }
 
