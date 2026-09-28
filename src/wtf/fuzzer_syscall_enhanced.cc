@@ -22,14 +22,13 @@
 /* Syscall Handling:
     - If arrays it's better to start with the largest input possible (so that the mutator can shrink its size)
 */
-namespace Syscall {
+namespace helpers {
 
-using namespace helpers;
+using json = nlohmann::json;
 using namespace win32k::value;
 using namespace win32k::target;
 using namespace win32k::access;
 
-std::deque<CallFrame> syscallToModify{};
 win32k::Database SyscallDatabase = win32k::Database::fromFile("win32k_syscalls_26100.json");
 
 
@@ -46,7 +45,7 @@ inline Registers_t toWtf(Reg r) {
 }
 
 
-void readParameters(Backend_t* Backend, std::string syscallName){
+std::optional<win32k::value::CallFrame> readParameters(Backend_t* Backend, std::string syscallName){
     Access access{};
     access.read_mem = [&](uint64_t g, void* d, size_t n) { return Backend->VirtRead(Gva_t(g), (uint8_t*)d, n); };
     access.read_reg  = [&](Reg r) { return Backend->GetReg(toWtf(r)); };
@@ -55,20 +54,44 @@ void readParameters(Backend_t* Backend, std::string syscallName){
     win32k::capture::CaptureResult res{};
 
     auto frame = cap.Capture(*SyscallDatabase.byName(syscallName), &res);
-    if (!res.ok) {
-        std::cout << "Pbm while reading the dump\n";
-        return;
-    }
+    if (!res.ok)
+        return std::nullopt;
 
-    std::cout << win32k::value::toJson(frame.value()) << "\n";
+    return frame;
 }
+
+
+std::vector<std::string> getInterestingSyscalls(const fs::path& jsonSyscalls){
+    std::ifstream f(jsonSyscalls);
+    json data = json::parse(f);
+    std::vector<std::string> v{};
+
+    std::for_each(data["undocumented"].begin(), data["undocumented"].end(), [&v](json syscall){ v.push_back(syscall["name"]); });
+
+    return v;
+}
+
+} // namespace helpers
+
+
+namespace Syscall {
+
+using namespace helpers;
+using namespace win32k::value;
+using namespace win32k::target;
+using namespace win32k::access;
+
+
+std::deque<CallFrame> syscallToModify{};
+// The bool parameter is here to indicate if it's a new syscall or not
+std::vector<CallFrame> actualCorpus{};
 
 
 bool InsertTestcase(const uint8_t *Buffer, const size_t BufferSize) {
     std::vector<CallFrame> Root = Deserialize(Buffer, BufferSize);
 
     for (const auto& f : Root){
-        DebugPrint("Frame with name {} \n", f.name());
+        DebugPrint<1>("Frame with name {} \n", f.name());
         syscallToModify.push_front(f);
     }
         
@@ -76,8 +99,21 @@ bool InsertTestcase(const uint8_t *Buffer, const size_t BufferSize) {
 }
 
 
-void insertSyscall(std::string syscallName, Backend_t* Backend){
-    
+void handleNewSyscall(std::string syscallName, Backend_t* Backend){
+    // Erase all next syscalls to make a new fresh record
+    syscallToModify.clear();
+
+    auto frame = readParameters(Backend, syscallName);
+    if(!frame){
+        DebugPrint<3>("Failed to retrieve arguments from {}", syscallName);
+        return;
+    }
+
+    actualCorpus.push_back(frame.value());
+}
+
+
+void breakpointSyscall(std::string syscallName, Backend_t* Backend){ 
     //
     // The first time we hit this breakpoint, we
     // grab the return address and we set a
@@ -89,6 +125,7 @@ void insertSyscall(std::string syscallName, Backend_t* Backend){
         setReturnBreakpoints.insert(syscallName);
         const auto ReturnAddress = Backend->VirtReadGva(Gva_t(Backend->Rsp()));
 
+        /*
         if (!Backend->SetBreakpoint(ReturnAddress, 
             [](Backend_t *Backend) {
                 DebugPrint("Hit return breakpoint!\n");
@@ -100,6 +137,17 @@ void insertSyscall(std::string syscallName, Backend_t* Backend){
             fmt::print("Failed to set breakpoint on return\n");
             std::abort();
         }
+        */
+    }
+
+    if(syscallToModify.empty()){
+        //
+        // If some unexpected syscalls arrive when the queue is empty
+        //
+        DebugPrint<3>("Captured unexpected {}\n", syscallName);
+        handleNewSyscall(syscallName, Backend);
+
+        return;
     }
 
     auto &Testcase = syscallToModify.front();
@@ -109,7 +157,9 @@ void insertSyscall(std::string syscallName, Backend_t* Backend){
         //
         // If some syscalls are inserted between the expected ones
         //
-        DebugPrint("Captured {} instead of {}\n", Testcase.name(), syscallName);
+        DebugPrint<3>("Captured {} instead of {}\n", Testcase.name(), syscallName);
+        handleNewSyscall(syscallName, Backend);
+
         return;
     }
 
@@ -117,35 +167,37 @@ void insertSyscall(std::string syscallName, Backend_t* Backend){
     //
     // Let's insert the testcase in memory now.
     //
-    DebugPrint("Going to insert testcase\n");
+    DebugPrint<1>("Going to insert testcase\n");
     
     InPlaceWriter writer{ *Backend };
     PlacedCall c = writer.WriteFrame(fw);
 
     if (!c.ok) {
-        DebugPrint("Failed to place the call\n");
+        DebugPrint<3>("Failed to place the call\n");
         std::abort();
     }
-    DebugPrint("Call placed\n");
+    DebugPrint<1>("Call placed\n");
 
     //
     // We're done with this testcase!
     //
+    actualCorpus.push_back(std::move(syscallToModify.front()));
+    actualCorpus.back().setModify(false);
+
     syscallToModify.pop_front();
 }
 
 
 bool Init(const Options_t &Opts, const CpuState_t &) {
-    DebugPrint("Fuzzing {}\n", Opts.TargetName);
+    DebugPrint<2>("Fuzzing {}\n", Opts.TargetName);
 
-    // TODO: Resolve that using corpus
-    std::vector<std::string> syscallsToParse{ "NtDeviceIoControlFile" };
+    std::vector<std::string> syscallsToParse = getInterestingSyscalls(Opts.SyscallPath);
 
     //
     // Catch context-switches.
     //
     if (!g_Backend->SetBreakpoint("nt!SwapContext", [](Backend_t *Backend) {
-        DebugPrint("nt!SwapContext\n");
+        DebugPrint<1>("nt!SwapContext\n");
         Backend->Stop(Cr3Change_t());
       })) {
         fmt::print("Failed to SetBreakpoint SwapContext\n");
@@ -158,7 +210,7 @@ bool Init(const Options_t &Opts, const CpuState_t &) {
     if (!g_Backend->SetBreakpoint("nt!DbgPrintEx", [](Backend_t *Backend) {
         const Gva_t FormatPtr = Backend->GetArgGva(2);
         const std::string &Format = Backend->VirtReadString(FormatPtr);
-        DebugPrint("DbgPrintEx: {}", Format);
+        DebugPrint<1>("DbgPrintEx: {}", Format);
         Backend->SimulateReturnFromFunction(0);
       })) {
         fmt::print("Failed to SetBreakpoint DbgPrintEx\n");
@@ -178,7 +230,7 @@ bool Init(const Options_t &Opts, const CpuState_t &) {
         const std::string Filename =
             fmt::format("crash-{:#x}-{:#x}-{:#x}-{:#x}-{:#x}-{:#x}", BCode, B0,
                         B1, B2, B3, B4);
-        DebugPrint("KeBugCheck2: {}\n", Filename);
+        DebugPrint<2>("KeBugCheck2: {}\n", Filename);
         Backend->Stop(Crash_t(Filename));
       })) {
         fmt::print("Failed to SetBreakpoint KeBugCheck2\n");
@@ -187,9 +239,10 @@ bool Init(const Options_t &Opts, const CpuState_t &) {
 
 
     for (const auto& syscallName : syscallsToParse){
+        // TODO: automatic break name
         std::string breakName = "nt!" + syscallName;
-        if (!g_Backend->SetBreakpoint(breakName.c_str(), std::bind(insertSyscall, syscallName, std::placeholders::_1))) {
-            DebugPrint("Failed to SetBreakpoint {}\n", breakName);
+        if (!g_Backend->SetBreakpoint(breakName.c_str(), std::bind(breakpointSyscall, syscallName, std::placeholders::_1))) {
+            DebugPrint<3>("Failed to SetBreakpoint {}\n", breakName);
             return false;
         }
     }
@@ -199,10 +252,11 @@ bool Init(const Options_t &Opts, const CpuState_t &) {
 
 
 bool Restore() { return true; }
+std::string getTC(){ return toJson(actualCorpus).dump(); }
 
 //
 // Register the target.
 //
-Target_t Syscall("syscall", Init, InsertTestcase, Restore, win32k::mutate::CustomMutator_t::Create);
+Target_t Syscall("syscall_enhanced", Init, InsertTestcase, Restore, win32k::mutate::CustomMutator_t::Create, getTC);
 
 } // namespace Syscall

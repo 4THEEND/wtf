@@ -37,12 +37,13 @@
 
 namespace helpers {
 
-constexpr bool DebugLoggingOn = false;
+constexpr int DebugLevel = 3;
 constexpr bool MutateSyscall = true;
+constexpr bool FreshRestart = true;
 
-template <typename... Args_t>
+template <int Level, typename... Args_t>
 void DebugPrint(const char *Format, const Args_t &...args) {
-  if constexpr (DebugLoggingOn) {
+  if constexpr (Level >= DebugLevel) {
     fmt::print("Syscall: ");
     fmt::print(fmt::runtime(Format), args...);
   }
@@ -54,7 +55,7 @@ std::vector<win32k::value::CallFrame> Deserialize(const uint8_t *Buffer, const s
   try {
     return win32k::value::corpusFromJson(Root);
   } catch (std::runtime_error(what_arg)) {
-    DebugPrint("{}\n", what_arg.what());
+    DebugPrint<0>("{}\n", what_arg.what());
     return { win32k::value::callFrameFromJson(Root) };
   }
 }
@@ -297,12 +298,11 @@ public:
 
     std::string Mutate(uint8_t *Data, const size_t DataLen, const size_t MaxSize) {
         std::vector<CallFrame> Root = Deserialize(Data, DataLen);
-        DebugPrint("Mutate: {} packets\n", Root.size());
+        DebugPrint<0>("Mutate: {} packets\n", Root.size());
 
         for(auto& frame : Root){
             FrameView fw = FrameView::bind(frame, SyscallDatabase_);
             MutationLog logs{ mutateWithVariableProbability(fw) };
-            // std::cout << logs.toJson() << "\n";
         }
 
         json Serialized{ win32k::value::toJson(Root) };

@@ -5,6 +5,7 @@
 #include "mutator.h"
 #include <cstdint>
 #include <vector>
+#include <functional>
 
 //
 // This describes a fuzzer target which is basically a name and a bunch of
@@ -17,18 +18,22 @@ struct Target_t {
   using Restore_t = bool (*)();
   using CreateMutator_t = std::unique_ptr<Mutator_t> (*)(std::mt19937_64 &,
                                                          const size_t);
+  using TestCaseGetter_t = std::optional<std::function<std::string()>>;
 
   explicit Target_t(
       const std::string &_Name, const Init_t _Init,
       const InsertTestcase_t _InsertTestcase,
       const Restore_t _Restore = []() { return true; },
-      const CreateMutator_t _CreateMutator = LibfuzzerMutator_t::Create);
+      const CreateMutator_t _CreateMutator = LibfuzzerMutator_t::Create,
+      const TestCaseGetter_t _TestCaseGetter = std::nullopt
+    );
 
   std::string Name;
   Init_t Init = nullptr;
   InsertTestcase_t InsertTestcase = nullptr;
   Restore_t Restore = nullptr;
   CreateMutator_t CreateMutator = nullptr;
+  TestCaseGetter_t TestCaseGetter = std::nullopt;
 };
 
 //

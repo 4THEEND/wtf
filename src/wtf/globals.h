@@ -1364,6 +1364,13 @@ struct Options_t {
 
   bool Edges = false;
 
+
+  //
+  // Path to the interesting syscall json file.
+  //
+
+  fs::path SyscallPath;
+
   //
   // Options for the subcommand 'run'.
   //

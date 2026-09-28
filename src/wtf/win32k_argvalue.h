@@ -328,13 +328,15 @@ inline Allocator simulatedAllocator(std::uint64_t base = 0x0000'0200'0000'0000ul
 class CallFrame {
 public:
     CallFrame() = default;
-    explicit CallFrame(std::uint32_t ssn, std::string name = {})
+    explicit CallFrame(std::uint32_t ssn, std::string name = {}, bool should_modify = true)
         : ssn_(ssn), name_(std::move(name)) {}
 
     std::uint32_t      ssn()  const { return ssn_; }
     const std::string& name() const { return name_; }
+    bool modify() const { return should_modify_; }
     void setSsn(std::uint32_t s) { ssn_ = s; }
     void setName(std::string n)  { name_ = std::move(n); }
+    void setModify(bool m){ should_modify_ = m; }
 
     // ---- regions ---------------------------------------------------------
 
@@ -466,6 +468,7 @@ private:
     std::string           name_;
     std::vector<Region>   regions_;
     std::vector<ArgValue> args_;
+    bool should_modify_;
 };
 
 // =========================================== building a frame from metadata ==
@@ -1014,7 +1017,9 @@ inline json toJson(const CallFrame& f, const SerializeOptions& o = {}) {
                 {"version", kFrameFormatVersion},
                 {"syscall", {{"name", f.name()}, {"ssn", f.ssn()}}},
                 {"regions", std::move(regions)},
-                {"args", std::move(args)}};
+                {"args", std::move(args)},
+                {"modify", f.modify()}
+            };
 }
 
 inline CallFrame callFrameFromJson(const json& j) {
@@ -1063,6 +1068,9 @@ inline CallFrame callFrameFromJson(const json& j) {
                                      std::to_string(v.region));
         f.setArg(i, v);
     }
+
+    f.setModify(j["modify"]);
+
     return f;
 }
 

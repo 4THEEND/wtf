@@ -245,10 +245,16 @@ int Client_t::Run(const Target_t &Target, const CpuState_t &CpuState) {
         Target, CpuState, {(uint8_t *)Testcase.data(), Testcase.size()});
 
     //
+    // Get actual testcase value
+    //
+
+    std::string actualTestcase = Target.TestCaseGetter ? Target.TestCaseGetter.value()() : Testcase;
+
+    //
     // Send the result back to the server.
     //
 
-    if (!SendResult(Client_, Testcase, g_Backend->LastNewCoverage(),
+    if (!SendResult(Client_, actualTestcase, g_Backend->LastNewCoverage(),
                     TestcaseResult)) {
       fmt::print("SendResult failed\n");
       break;
