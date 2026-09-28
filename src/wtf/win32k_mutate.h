@@ -301,8 +301,10 @@ public:
         DebugPrint<0>("Mutate: {} packets\n", Root.size());
 
         for(auto& frame : Root){
-            FrameView fw = FrameView::bind(frame, SyscallDatabase_);
-            MutationLog logs{ mutateWithVariableProbability(fw) };
+            if(frame.modify()){
+                FrameView fw = FrameView::bind(frame, SyscallDatabase_);
+                MutationLog logs{ mutateWithVariableProbability(fw) };
+            }
         }
 
         json Serialized{ win32k::value::toJson(Root) };
