@@ -329,7 +329,7 @@ class CallFrame {
 public:
     CallFrame() = default;
     explicit CallFrame(std::uint32_t ssn, std::string name = {}, bool should_modify = true)
-        : ssn_(ssn), name_(std::move(name)) {}
+        : ssn_(ssn), name_(std::move(name)), should_modify_(should_modify) {}
 
     std::uint32_t      ssn()  const { return ssn_; }
     const std::string& name() const { return name_; }

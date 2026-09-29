@@ -37,7 +37,7 @@
 
 namespace helpers {
 
-constexpr int DebugLevel = 3;
+constexpr int DebugLevel = 1;
 constexpr bool MutateSyscall = true;
 constexpr bool FreshRestart = true;
 
@@ -56,7 +56,12 @@ std::vector<win32k::value::CallFrame> Deserialize(const uint8_t *Buffer, const s
     return win32k::value::corpusFromJson(Root);
   } catch (std::runtime_error(what_arg)) {
     DebugPrint<0>("{}\n", what_arg.what());
-    return { win32k::value::callFrameFromJson(Root) };
+    try {
+        return { win32k::value::callFrameFromJson(Root) };
+    } catch (std::runtime_error(what_arg)) {
+        DebugPrint<0>("{}\n", what_arg.what());
+        return {};
+    }
   }
 }
 
@@ -304,6 +309,7 @@ public:
             if(frame.modify()){
                 FrameView fw = FrameView::bind(frame, SyscallDatabase_);
                 MutationLog logs{ mutateWithVariableProbability(fw) };
+                std::cout << logs.toJson() << "\n";
             }
         }
 

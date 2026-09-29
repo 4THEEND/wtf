@@ -239,6 +239,10 @@ int main(int argc, const char *argv[]) {
       {"kvm", BackendType_t::Kvm}
 #endif
   };
+  RunCmd->add_option("--interesting", Opts.SyscallPath, "Interresting syscalls name")
+      ->description("Path to the interesting syscalls json file.")
+      ->check(CLI::ExistingFile)
+      ->default_val("undocu.json");
 
   RunCmd->add_option("--name", Opts.TargetName, "Target name")
       ->description("Name of the target fuzzer.")
@@ -352,6 +356,10 @@ int main(int argc, const char *argv[]) {
         }
 #endif
       });
+  FuzzCmd->add_option("--interesting", Opts.SyscallPath, "Interresting syscalls name")
+      ->description("Path to the interesting syscalls json file.")
+      ->check(CLI::ExistingFile)
+      ->default_val("undocu.json");
 
   FuzzCmd->add_option("--backend", Opts.Backend, "Execution backend")
       ->transform(CLI::CheckedTransformer(BackendTypeMap, CLI::ignore_case))
